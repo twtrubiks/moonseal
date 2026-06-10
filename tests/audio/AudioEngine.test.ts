@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mocks = vi.hoisted(() => {
   const startMock = vi.fn(async () => {});
@@ -204,5 +204,37 @@ describe('AudioEngine', () => {
     await engine.previewOnce('ocean', 5, 0.7);
     await engine.crossfadeTo('rain', 0.5, 1);
     expect(playerInstances[0]?.stop).not.toHaveBeenCalled();
+  });
+
+  describe('crossfade 殺軌計時器 race', () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('crossfade 走掉又在窗口內切回來：復活的軌不能被舊計時器殺掉', async () => {
+      await engine.initialize();
+      await engine.playTrack('ocean', 0.7);          // 段 N：ocean
+      await engine.crossfadeTo('rain', 0.6, 10);     // 段 N+1：排程 +10s 殺 ocean
+      await vi.advanceTimersByTimeAsync(5000);       // 段 N+1 只播 5 秒
+      await engine.crossfadeTo('ocean', 0.7, 1);     // 段 N+2：切回 ocean（復活）
+      await vi.advanceTimersByTimeAsync(10000);      // 原殺軌計時器到期
+
+      expect(engine.isPlaying('ocean')).toBe(true);
+      expect(playerInstances[0]?.stop).not.toHaveBeenCalled();
+      expect(playerInstances[0]?.dispose).not.toHaveBeenCalled();
+    });
+
+    it('過期計時器不能把同 id 重建的新軌踢出追蹤名單（幽靈軌）', async () => {
+      await engine.initialize();
+      await engine.playTrack('ocean', 0.7);
+      await engine.crossfadeTo('rain', 0.6, 10);     // 排程 +10s 殺 ocean
+      await vi.advanceTimersByTimeAsync(5000);
+      await engine.stopTrack('ocean', 0);            // 提前手動停掉舊 ocean
+      await engine.playTrack('ocean', 0.5);          // 同 id 重建新軌
+      await vi.advanceTimersByTimeAsync(10000);      // 舊計時器到期
+
+      expect(engine.isPlaying('ocean')).toBe(true);
+      const newOcean = playerInstances[2];
+      expect(newOcean?.stop).not.toHaveBeenCalled();
+    });
   });
 });

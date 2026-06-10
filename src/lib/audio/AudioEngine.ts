@@ -17,7 +17,16 @@ function rampVolume(source: Tone.Player | Tone.Noise, linearGain: number, sec: n
 export class AudioEngine {
   private initialized = false;
   private readonly tracks = new Map<string, ActiveTrack>();
+  /** crossfade 淡出後延遲殺軌的計時器，key 為 soundId；軌復活或提前停掉時必須取消 */
+  private readonly pendingKills = new Map<string, ReturnType<typeof setTimeout>>();
   private previewTrack: ActiveTrack | null = null;
+
+  private cancelPendingKill(soundId: string): void {
+    const handle = this.pendingKills.get(soundId);
+    if (handle === undefined) return;
+    clearTimeout(handle);
+    this.pendingKills.delete(soundId);
+  }
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
@@ -29,6 +38,7 @@ export class AudioEngine {
     const def = getSoundById(soundId);
     if (!def) throw new Error(`unknown sound: ${soundId}`);
     if (this.tracks.has(soundId)) {
+      this.cancelPendingKill(soundId);
       this.setVolume(soundId, volume, fadeInSec);
       return;
     }
@@ -48,6 +58,7 @@ export class AudioEngine {
   async stopTrack(soundId: string, fadeOutSec = 0.5): Promise<void> {
     const t = this.tracks.get(soundId);
     if (!t) return;
+    this.cancelPendingKill(soundId);
     if (fadeOutSec > 0) {
       rampVolume(t.source, 0, fadeOutSec);
       await new Promise((r) => setTimeout(r, fadeOutSec * 1000));
@@ -69,6 +80,7 @@ export class AudioEngine {
     const previousIds = [...this.tracks.keys()].filter((id) => id !== soundId);
 
     if (this.tracks.has(soundId)) {
+      this.cancelPendingKill(soundId);
       this.setVolume(soundId, volume, crossfadeSec);
     } else {
       const track = await this.createTrack(def);
@@ -81,15 +93,19 @@ export class AudioEngine {
     for (const id of previousIds) {
       const prev = this.tracks.get(id)!;
       rampVolume(prev.source, 0, crossfadeSec);
-      setTimeout(() => {
+      this.cancelPendingKill(id);
+      const handle = setTimeout(() => {
+        this.pendingKills.delete(id);
         try {
           prev.source.stop();
           prev.source.dispose();
         } catch {
           /* already disposed */
         }
-        this.tracks.delete(id);
+        // 只刪掉自己排程時的那條軌；同 id 若已被重建，不能誤刪新軌
+        if (this.tracks.get(id) === prev) this.tracks.delete(id);
       }, crossfadeSec * 1000);
+      this.pendingKills.set(id, handle);
     }
   }
 
