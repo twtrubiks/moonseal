@@ -14,6 +14,7 @@
   import { uiStore } from './lib/stores/uiStore.svelte';
 
   uiStore.initBreakpoint();
+  uiStore.initRouter();
 
   let storiesKey = $state(0);
 </script>
