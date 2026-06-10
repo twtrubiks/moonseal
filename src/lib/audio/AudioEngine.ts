@@ -20,6 +20,7 @@ export class AudioEngine {
   /** crossfade 淡出後延遲殺軌的計時器，key 為 soundId；軌復活或提前停掉時必須取消 */
   private readonly pendingKills = new Map<string, ReturnType<typeof setTimeout>>();
   private previewTrack: ActiveTrack | null = null;
+  private previewStopTimer: ReturnType<typeof setTimeout> | null = null;
 
   private cancelPendingKill(soundId: string): void {
     const handle = this.pendingKills.get(soundId);
@@ -134,10 +135,17 @@ export class AudioEngine {
     track.source.volume.value = MIN_DB;
     track.source.start();
     rampVolume(track.source, volume, 0.3);
-    setTimeout(() => { void this.stopPreview(1); }, durationSec * 1000);
+    this.previewStopTimer = setTimeout(() => {
+      this.previewStopTimer = null;
+      void this.stopPreview(1);
+    }, durationSec * 1000);
   }
 
   async stopPreview(fadeOutSec = 0.3): Promise<void> {
+    if (this.previewStopTimer) {
+      clearTimeout(this.previewStopTimer);
+      this.previewStopTimer = null;
+    }
     const t = this.previewTrack;
     if (!t) return;
     this.previewTrack = null;
@@ -153,7 +161,12 @@ export class AudioEngine {
     if (def.type === 'file') {
       const player = new Tone.Player(def.src!).toDestination();
       player.loop = true;
-      await Tone.loaded();
+      try {
+        await Tone.loaded();
+      } catch (e) {
+        player.dispose();
+        throw e;
+      }
       return { soundId: def.id, source: player };
     }
     const noise = new Tone.Noise(def.flavor!).toDestination();

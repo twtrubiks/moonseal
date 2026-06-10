@@ -206,6 +206,37 @@ describe('AudioEngine', () => {
     expect(playerInstances[0]?.stop).not.toHaveBeenCalled();
   });
 
+  it('createTrack 載入失敗時要 dispose 掉已建立的 Player，不留孤兒節點', async () => {
+    loadedMock.mockRejectedValueOnce(new Error('load failed'));
+    await engine.initialize();
+    await expect(engine.playTrack('ocean', 0.5)).rejects.toThrow('load failed');
+    expect(playerInstances[0]?.dispose).toHaveBeenCalled();
+  });
+
+  describe('preview 停止計時器', () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('快速連續試聽：前一個試聽的停止計時器不能砍掉新的試聽', async () => {
+      await engine.initialize();
+      await engine.previewOnce('ocean', 5, 0.7);     // t=0：排程 t=5s 停止
+      await vi.advanceTimersByTimeAsync(3000);
+
+      const p = engine.previewOnce('rain', 5, 0.7);  // t=3s：換試聽 rain
+      await vi.advanceTimersByTimeAsync(100);        // 讓內部 stopPreview(0.1) 的 fade 完成
+      await p;                                       // rain 排程 t≈8.1s 停止
+
+      // 走到 ocean 的舊計時器（t=5s）之後再加 1 秒 fade：rain 不能被砍
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(playerInstances[1]?.stop).not.toHaveBeenCalled();
+
+      // rain 自己的計時器到期後正常停止
+      await vi.advanceTimersByTimeAsync(4000);
+      expect(playerInstances[1]?.stop).toHaveBeenCalled();
+      expect(playerInstances[1]?.dispose).toHaveBeenCalled();
+    });
+  });
+
   describe('crossfade 殺軌計時器 race', () => {
     beforeEach(() => { vi.useFakeTimers(); });
     afterEach(() => { vi.useRealTimers(); });
