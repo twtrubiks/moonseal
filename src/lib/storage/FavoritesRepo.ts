@@ -9,20 +9,37 @@ export interface AddFavoriteInput {
 }
 
 export class FavoritesRepo {
-  /** (type, refId) 視為唯一：已存在就回傳既有記錄，不重複新增 */
+  /**
+   * (type, refId) 唯一：已存在就回傳既有記錄，不重複新增。
+   * 「查既有→沒有才寫入」放在同一個 readwrite 交易內完成——IndexedDB 會把範圍重疊的
+   * readwrite 交易序列化，並發 add 不會兩邊都查無而各插一筆。DB 的 by-type-ref unique
+   * index 為最終防線：萬一仍有外部路徑搶插，會以 ConstraintError abort，這裡回退查既有記錄。
+   */
   async add(input: AddFavoriteInput): Promise<FavoriteRecord> {
     const db = await getDB();
-    const all = await db.getAll('favorites');
-    const existing = all.find((f) => f.type === input.type && f.refId === input.refId);
-    if (existing) return existing;
+    const key: [FavoriteType, string] = [input.type, input.refId];
+    const tx = db.transaction('favorites', 'readwrite');
+    const existing = await tx.store.index('by-type-ref').get(key);
+    if (existing) {
+      await tx.done;
+      return existing;
+    }
     const record: FavoriteRecord = {
       id: uuid(),
       type: input.type,
       refId: input.refId,
       addedAt: Date.now()
     };
-    await db.put('favorites', record);
-    return record;
+    try {
+      await tx.store.add(record);
+      await tx.done;
+      return record;
+    } catch (e) {
+      void tx.done.catch(() => { /* add 失敗交易已 abort，吞掉連帶的 reject */ });
+      const again = await db.transaction('favorites').store.index('by-type-ref').get(key);
+      if (again) return again;
+      throw e;
+    }
   }
 
   async remove(id: string): Promise<void> {
