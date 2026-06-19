@@ -16,6 +16,9 @@ function rampVolume(source: Tone.Player | Tone.Noise, linearGain: number, sec: n
 
 export class AudioEngine {
   private initialized = false;
+  /** 所有音軌都接到這個 master gain 再到喇叭，調它就等於套用 master volume 到全部播放 */
+  private master: Tone.Gain | null = null;
+  private masterLinear = 1;
   private readonly tracks = new Map<string, ActiveTrack>();
   /** crossfade 淡出後延遲殺軌的計時器，key 為 soundId；軌復活或提前停掉時必須取消 */
   private readonly pendingKills = new Map<string, ReturnType<typeof setTimeout>>();
@@ -32,7 +35,14 @@ export class AudioEngine {
   async initialize(): Promise<void> {
     if (this.initialized) return;
     await Tone.start();
+    this.master = new Tone.Gain(this.masterLinear).toDestination();
     this.initialized = true;
+  }
+
+  /** 套用 master volume 到所有播放（playTrack / crossfade / story / preview 都經過 master gain） */
+  setMasterVolume(linear: number, rampSec = 0.05): void {
+    this.masterLinear = Math.max(0, Math.min(1, linear));
+    this.master?.gain.rampTo(this.masterLinear, rampSec);
   }
 
   async playTrack(soundId: string, volume: number, fadeInSec = 1): Promise<void> {
@@ -158,8 +168,9 @@ export class AudioEngine {
   }
 
   private async createTrack(def: SoundDef): Promise<ActiveTrack> {
+    const out = this.master ?? Tone.getDestination();
     if (def.type === 'file') {
-      const player = new Tone.Player(def.src!).toDestination();
+      const player = new Tone.Player(def.src!).connect(out);
       player.loop = true;
       try {
         await Tone.loaded();
@@ -169,7 +180,7 @@ export class AudioEngine {
       }
       return { soundId: def.id, source: player };
     }
-    const noise = new Tone.Noise(def.flavor!).toDestination();
+    const noise = new Tone.Noise(def.flavor!).connect(out);
     return { soundId: def.id, source: noise };
   }
 }

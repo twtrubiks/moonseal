@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => {
     playTrack: vi.fn(async () => {}),
     crossfadeTo: vi.fn(async () => {}),
     setVolume: vi.fn(),
+    setMasterVolume: vi.fn(),
     stopTrack: vi.fn(async () => {}),
     stopAll: vi.fn(async () => {}),
     previewOnce: vi.fn(async () => {}),
@@ -19,6 +20,7 @@ vi.mock('../../src/lib/audio/AudioEngine', () => ({
     playTrack: mocks.playTrack,
     crossfadeTo: mocks.crossfadeTo,
     setVolume: mocks.setVolume,
+    setMasterVolume: mocks.setMasterVolume,
     stopTrack: mocks.stopTrack,
     stopAll: mocks.stopAll,
     previewOnce: mocks.previewOnce,
@@ -182,6 +184,25 @@ describe('audioStore — race: stopStory before in-flight playTrack resolves', (
 
     expect(mocks.stopAll).toHaveBeenCalled();
     expect(audioStore.mode).toBe('idle');
+  });
+});
+
+describe('audioStore — master volume', () => {
+  beforeEach(reset);
+
+  it('setMasterVolume delegates to engine (ramp) and clamps to [0,1]', async () => {
+    await audioStore.toggleSound('ocean', 0.7); // 觸發 ensureInitialized
+    mocks.setMasterVolume.mockClear();
+
+    audioStore.setMasterVolume(0.4);
+    expect(audioStore.masterVolume).toBe(0.4);
+    expect(mocks.setMasterVolume).toHaveBeenCalledWith(0.4, 0.05);
+
+    audioStore.setMasterVolume(2);
+    expect(audioStore.masterVolume).toBe(1);
+
+    audioStore.setMasterVolume(-1);
+    expect(audioStore.masterVolume).toBe(0);
   });
 });
 

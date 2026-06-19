@@ -14,6 +14,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
 const SETTINGS_KEY = 'app';
 
 export class SettingsRepo {
+  /** 串行化寫入：避免並發 save 各自 load 後互相覆蓋造成 lost update */
+  private writeChain: Promise<void> = Promise.resolve();
+
   async load(): Promise<AppSettings> {
     const db = await getDB();
     const row = await db.get('settings', SETTINGS_KEY);
@@ -21,11 +24,16 @@ export class SettingsRepo {
     return { ...DEFAULT_SETTINGS, ...(row.value as Partial<AppSettings>) };
   }
 
-  async save(patch: Partial<AppSettings>): Promise<void> {
-    const db = await getDB();
-    const current = await this.load();
-    const merged = { ...current, ...patch };
-    await db.put('settings', { key: SETTINGS_KEY, value: merged });
+  save(patch: Partial<AppSettings>): Promise<void> {
+    const next = this.writeChain.then(async () => {
+      const db = await getDB();
+      const current = await this.load();
+      const merged = { ...current, ...patch };
+      await db.put('settings', { key: SETTINGS_KEY, value: merged });
+    });
+    // 鏈不因單次失敗而中斷後續寫入
+    this.writeChain = next.catch(() => {});
+    return next;
   }
 }
 

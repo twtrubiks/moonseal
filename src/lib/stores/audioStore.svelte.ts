@@ -1,5 +1,6 @@
 import { audioEngine } from '../audio/AudioEngine';
 import { recentsRepo } from '../storage/RecentsRepo';
+import { settingsRepo, DEFAULT_SETTINGS } from '../storage/SettingsRepo';
 import { toastStore } from './toastStore.svelte';
 import { StoryRunner } from '../story/StoryRunner';
 import type { StoryDef, StorySegment } from '../story/types';
@@ -13,7 +14,7 @@ export type PlaybackMode = 'idle' | 'mix' | 'story';
 
 class AudioStore {
   initialized = $state(false);
-  masterVolume = $state(0.7);
+  masterVolume = $state(DEFAULT_SETTINGS.masterVolume);
 
   mode = $state<PlaybackMode>('idle');
   tracks = $state<Record<string, TrackState>>({});
@@ -25,12 +26,24 @@ class AudioStore {
   private runner: StoryRunner | null = null;
   private busy: Promise<unknown> | null = null;
   private pendingSegment: Promise<void> | null = null;
+  private masterPersistTimer: ReturnType<typeof setTimeout> | null = null;
 
   isPlaying = $derived(this.mode !== 'idle');
+
+  constructor() {
+    void settingsRepo
+      .load()
+      .then((s) => {
+        this.masterVolume = s.masterVolume;
+        if (this.initialized) audioEngine.setMasterVolume(s.masterVolume, 0);
+      })
+      .catch(() => { /* 設定載入失敗就用預設值 */ });
+  }
 
   async ensureInitialized() {
     if (this.initialized) return;
     await audioEngine.initialize();
+    audioEngine.setMasterVolume(this.masterVolume, 0);
     this.initialized = true;
   }
 
@@ -62,11 +75,14 @@ class AudioStore {
   }
 
   setMasterVolume(volume: number) {
-    this.masterVolume = volume;
-    for (const id of Object.keys(this.tracks)) {
-      const t = this.tracks[id];
-      if (t) audioEngine.setVolume(id, t.volume * volume, 0.05);
-    }
+    const v = Math.max(0, Math.min(1, volume));
+    this.masterVolume = v;
+    if (this.initialized) audioEngine.setMasterVolume(v, 0.05);
+    if (this.masterPersistTimer) clearTimeout(this.masterPersistTimer);
+    this.masterPersistTimer = setTimeout(() => {
+      this.masterPersistTimer = null;
+      void settingsRepo.save({ masterVolume: v }).catch(() => { /* 持久化失敗忽略 */ });
+    }, 300);
   }
 
   async startStory(story: StoryDef): Promise<void> {

@@ -9,8 +9,13 @@ const mocks = vi.hoisted(() => {
     rampTo = vi.fn();
     value = 0;
   }
+  const gainInstances: FakeGain[] = [];
   class FakeGain {
     gain = new FakeParam();
+    constructor(initial = 1) {
+      this.gain.value = initial;
+      gainInstances.push(this);
+    }
     connect(_: unknown) { return this; }
     toDestination() { return this; }
     dispose = vi.fn();
@@ -48,7 +53,7 @@ const mocks = vi.hoisted(() => {
     }
   }
 
-  return { startMock, loadedMock, gainToDb, FakeGain, FakePlayer, FakeNoise, playerInstances, noiseInstances };
+  return { startMock, loadedMock, gainToDb, FakeGain, FakePlayer, FakeNoise, playerInstances, noiseInstances, gainInstances };
 });
 
 vi.mock('tone', () => ({
@@ -63,7 +68,7 @@ vi.mock('tone', () => ({
 
 import { AudioEngine } from '../../src/lib/audio/AudioEngine';
 
-const { playerInstances, noiseInstances, startMock, loadedMock, gainToDb } = mocks;
+const { playerInstances, noiseInstances, gainInstances, startMock, loadedMock, gainToDb } = mocks;
 const MIN_DB = -100;
 const dbOf = (linear: number) => (linear <= 0 ? MIN_DB : gainToDb(linear));
 
@@ -73,6 +78,7 @@ describe('AudioEngine', () => {
   beforeEach(() => {
     playerInstances.length = 0;
     noiseInstances.length = 0;
+    gainInstances.length = 0;
     startMock.mockClear();
     loadedMock.mockClear();
     engine = new AudioEngine();
@@ -81,6 +87,34 @@ describe('AudioEngine', () => {
   it('initialize() calls Tone.start() (autoplay unlock)', async () => {
     await engine.initialize();
     expect(startMock).toHaveBeenCalledOnce();
+  });
+
+  it('initialize() 建立 master gain 並套用待生效的 masterLinear', async () => {
+    engine.setMasterVolume(0.3); // 尚未 initialize，先記下
+    await engine.initialize();
+    expect(gainInstances).toHaveLength(1);
+    expect(gainInstances[0]?.gain.value).toBe(0.3);
+  });
+
+  it('setMasterVolume 以線性增益 ramp master gain', async () => {
+    await engine.initialize();
+    engine.setMasterVolume(0.5, 0.1);
+    expect(gainInstances[0]?.gain.rampTo).toHaveBeenLastCalledWith(0.5, 0.1);
+  });
+
+  it('setMasterVolume 將值夾在 [0,1]', async () => {
+    await engine.initialize();
+    engine.setMasterVolume(1.8, 0.1);
+    expect(gainInstances[0]?.gain.rampTo).toHaveBeenLastCalledWith(1, 0.1);
+    engine.setMasterVolume(-0.5, 0.1);
+    expect(gainInstances[0]?.gain.rampTo).toHaveBeenLastCalledWith(0, 0.1);
+  });
+
+  it('音軌接到 master gain 而非直接 toDestination', async () => {
+    await engine.initialize();
+    const master = gainInstances[0]!;
+    await engine.playTrack('ocean', 0.7);
+    expect(playerInstances[0]?.connect).toHaveBeenCalledWith(master);
   });
 
   it('playTrack creates a Tone.Player for file-type sounds and starts it', async () => {
