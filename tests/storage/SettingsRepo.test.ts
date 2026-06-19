@@ -29,4 +29,18 @@ describe('SettingsRepo', () => {
     expect(s.masterVolume).toBe(0.5);
     expect(s.defaultTimerMin).toBe(30);
   });
+
+  it('並發 save 不會互相覆蓋（串行化避免 lost update）', async () => {
+    const repo = new SettingsRepo();
+    // 不 await，讓三個寫入同時飛出去：若各自 load→merge→put 會互相蓋掉
+    await Promise.all([
+      repo.save({ masterVolume: 0.3 }),
+      repo.save({ fadeOutOnTimerSec: 15 }),
+      repo.save({ defaultTimerMin: 45 })
+    ]);
+    const s = await repo.load();
+    expect(s.masterVolume).toBe(0.3);
+    expect(s.fadeOutOnTimerSec).toBe(15);
+    expect(s.defaultTimerMin).toBe(45);
+  });
 });

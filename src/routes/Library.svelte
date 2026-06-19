@@ -6,10 +6,15 @@
   import { loadBuiltinStories } from '../lib/story/builtinStories';
   import { storyRepo } from '../lib/storage/StoryRepo';
   import { audioStore } from '../lib/stores/audioStore.svelte';
+  import { timerStore } from '../lib/stores/timerStore.svelte';
   import { uiStore } from '../lib/stores/uiStore.svelte';
   import { toastStore } from '../lib/stores/toastStore.svelte';
   import Glyph from '../components/Glyph.svelte';
+  import VolumeSlider from '../components/VolumeSlider.svelte';
   import type { FavoriteRecord, RecentRecord, MixRecord } from '../lib/storage/db';
+
+  const FADE_PRESETS = [0, 10, 20, 30, 45, 60] as const;
+  const TIMER_PRESETS = [15, 30, 45, 60, 90] as const;
 
   let favorites = $state<FavoriteRecord[]>([]);
   let recents = $state<RecentRecord[]>([]);
@@ -168,6 +173,47 @@
       </div>
     {/if}
   </div>
+
+  <div class="block">
+    <div class="section-label">設定</div>
+    <div class="settings">
+      <div class="setting">
+        <div class="setting-head">
+          <span class="setting-name">主音量</span>
+          <span class="setting-val en">{Math.round(audioStore.masterVolume * 100)}%</span>
+        </div>
+        <VolumeSlider value={audioStore.masterVolume} oninput={(v) => audioStore.setMasterVolume(v)} />
+      </div>
+
+      <div class="setting">
+        <div class="setting-head">
+          <span class="setting-name">計時結束淡出</span>
+          <span class="setting-val en">{timerStore.fadeOutSec === 0 ? '關閉' : `${timerStore.fadeOutSec}s`}</span>
+        </div>
+        <div class="seg">
+          {#each FADE_PRESETS as f (f)}
+            <button class:active={timerStore.fadeOutSec === f} onclick={() => timerStore.setFadeOutSec(f)}>
+              {f === 0 ? '關' : `${f}s`}
+            </button>
+          {/each}
+        </div>
+      </div>
+
+      <div class="setting">
+        <div class="setting-head">
+          <span class="setting-name">預設計時時長</span>
+          <span class="setting-val en">{timerStore.defaultTimerMin} 分</span>
+        </div>
+        <div class="seg">
+          {#each TIMER_PRESETS as m (m)}
+            <button class:active={timerStore.defaultTimerMin === m} onclick={() => timerStore.setDefaultTimerMin(m)}>
+              <span class="en">{m}</span>
+            </button>
+          {/each}
+        </div>
+      </div>
+    </div>
+  </div>
 </section>
 
 <style>
@@ -318,4 +364,39 @@
   .r-glyph { color: var(--ink-soft); line-height: 0; }
   .r-name { font-size: 14px; flex: 1; }
   .r-time { font-size: 11px; color: var(--mute); }
+
+  .settings {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    max-width: 460px;
+  }
+  .setting-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 10px;
+  }
+  .setting-name { font-size: 14px; }
+  .setting-val { font-size: 12px; color: var(--mute); letter-spacing: 0.08em; }
+  .seg {
+    display: flex;
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    width: fit-content;
+  }
+  .seg button {
+    padding: 8px 14px;
+    min-width: 46px;
+    background: var(--bg);
+    color: var(--ink);
+    font-size: 13px;
+    line-height: 1.2;
+    cursor: pointer;
+  }
+  .seg button.active {
+    background: var(--ink);
+    color: var(--bg);
+  }
 </style>

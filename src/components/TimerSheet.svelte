@@ -6,13 +6,14 @@
   const PRESETS = [15, 30, 45, 60, 90] as const;
   const DASH = 289; // 2πr (r=46)
 
-  let totalSec = $derived(timerStore.running ? timerStore.remainingSec + 0 : 0);
   let selectedMin = $state<number | null>(null);
+  // 未手動選擇時，回退到設定的預設時長（會隨設定變更而反應）
+  let effectiveMin = $derived(selectedMin ?? timerStore.defaultTimerMin);
 
-  let displayLeft = $derived(timerStore.running ? timerStore.remainingSec : (selectedMin ?? 30) * 60);
+  let displayLeft = $derived(timerStore.running ? timerStore.remainingSec : effectiveMin * 60);
   let displayTotal = $derived(timerStore.running
-    ? Math.max(timerStore.remainingSec, (selectedMin ?? 30) * 60)
-    : (selectedMin ?? 30) * 60);
+    ? Math.max(timerStore.remainingSec, effectiveMin * 60)
+    : effectiveMin * 60);
   let ratio = $derived(displayTotal > 0 ? displayLeft / displayTotal : 0);
 
   function start(min: number) {
@@ -47,10 +48,8 @@
             <div class="hint">
               {#if timerStore.running}
                 剩餘 · 共 {Math.round(displayTotal / 60)} 分鐘
-              {:else if selectedMin}
-                預備 · {selectedMin} 分鐘
               {:else}
-                選擇時長
+                預備 · {effectiveMin} 分鐘
               {/if}
             </div>
           </div>
@@ -58,7 +57,7 @@
 
         <div class="presets">
           {#each PRESETS as m (m)}
-            <button class:active={(timerStore.running && Math.round(displayTotal / 60) === m) || (!timerStore.running && selectedMin === m)}
+            <button class:active={(timerStore.running && Math.round(displayTotal / 60) === m) || (!timerStore.running && effectiveMin === m)}
                     onclick={() => start(m)}>
               <span class="en">{m}</span><span class="unit">分</span>
             </button>

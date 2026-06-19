@@ -1,13 +1,16 @@
 import { audioEngine } from '../audio/AudioEngine';
 import { audioStore } from './audioStore.svelte';
 import { SleepTimer } from '../timer/SleepTimer';
-import { settingsRepo } from '../storage/SettingsRepo';
+import { settingsRepo, DEFAULT_SETTINGS } from '../storage/SettingsRepo';
+
+const DEFAULT_TIMER_MIN = 30;
 
 class TimerStore {
   remainingSec = $state(0);
   totalSec = $state(0);
   running = $state(false);
-  fadeOutSec = $state(30);
+  fadeOutSec = $state(DEFAULT_SETTINGS.fadeOutOnTimerSec);
+  defaultTimerMin = $state(DEFAULT_TIMER_MIN);
   private timer: SleepTimer;
   private tickHandle: ReturnType<typeof setInterval> | null = null;
 
@@ -24,6 +27,19 @@ class TimerStore {
   private async loadSettings() {
     const s = await settingsRepo.load();
     this.fadeOutSec = s.fadeOutOnTimerSec;
+    this.defaultTimerMin = s.defaultTimerMin ?? DEFAULT_TIMER_MIN;
+  }
+
+  setFadeOutSec(sec: number) {
+    const v = Math.max(0, Math.round(sec));
+    this.fadeOutSec = v;
+    void settingsRepo.save({ fadeOutOnTimerSec: v }).catch(() => { /* 持久化失敗忽略 */ });
+  }
+
+  setDefaultTimerMin(min: number) {
+    const v = Math.max(1, Math.round(min));
+    this.defaultTimerMin = v;
+    void settingsRepo.save({ defaultTimerMin: v }).catch(() => { /* 持久化失敗忽略 */ });
   }
 
   start(totalMin: number) {
