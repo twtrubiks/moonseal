@@ -50,6 +50,17 @@ describe('FavoritesRepo', () => {
     expect(all[1]?.refId).toBe('a');
   });
 
+  it('add() 對同一 (type, refId) 去重，回傳既有記錄不新增', async () => {
+    const repo = new FavoritesRepo();
+    const first = await repo.add({ type: 'sound', refId: 'ocean' });
+    const again = await repo.add({ type: 'sound', refId: 'ocean' });
+    expect(again.id).toBe(first.id);
+    expect(await repo.listAll()).toHaveLength(1);
+    // 不同 type 但同 refId 視為不同收藏
+    await repo.add({ type: 'story', refId: 'ocean' });
+    expect(await repo.listAll()).toHaveLength(2);
+  });
+
   it('removeByRef() removes only matching type+refId, preserves others', async () => {
     const repo = new FavoritesRepo();
     await repo.add({ type: 'story', refId: 'a' });

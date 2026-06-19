@@ -1,4 +1,5 @@
 import type { StoryDef } from './types';
+import { validateStoryDef } from './validate';
 
 export const BUILTIN_STORY_IDS = [
   'seaside-walk',
@@ -15,7 +16,11 @@ export async function loadBuiltinStories(): Promise<StoryDef[]> {
   for (const id of BUILTIN_STORY_IDS) {
     const res = await fetch(`${import.meta.env.BASE_URL}stories/${id}.json`);
     if (!res.ok) throw new Error(`failed to load story: ${id}`);
-    out.push(await res.json() as StoryDef);
+    try {
+      out.push(validateStoryDef(await res.json()));
+    } catch (e) {
+      throw new Error(`story ${id} 格式錯誤：${e instanceof Error ? e.message : String(e)}`);
+    }
   }
   return out;
 }

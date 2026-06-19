@@ -9,8 +9,12 @@ export interface AddFavoriteInput {
 }
 
 export class FavoritesRepo {
+  /** (type, refId) 視為唯一：已存在就回傳既有記錄，不重複新增 */
   async add(input: AddFavoriteInput): Promise<FavoriteRecord> {
     const db = await getDB();
+    const all = await db.getAll('favorites');
+    const existing = all.find((f) => f.type === input.type && f.refId === input.refId);
+    if (existing) return existing;
     const record: FavoriteRecord = {
       id: uuid(),
       type: input.type,

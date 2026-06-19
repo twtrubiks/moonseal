@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { StoryRepo } from '../../src/lib/storage/StoryRepo';
-import { _resetForTests } from '../../src/lib/storage/db';
+import { _resetForTests, getDB } from '../../src/lib/storage/db';
 
 describe('StoryRepo', () => {
   beforeEach(async () => {
@@ -56,5 +56,30 @@ describe('StoryRepo', () => {
     const story = await repo.save({ name: 'X', segments: input });
     expect(story.segments).not.toBe(input);
     expect(story.segments).toEqual(input);
+  });
+
+  it('listAll() 略過格式無效的記錄，保留合法記錄', async () => {
+    const repo = new StoryRepo();
+    const good = await repo.save({
+      name: 'Good',
+      segments: [{ soundId: 'rain', durationSec: 60, crossfadeSec: 5, volume: 0.7 }]
+    });
+    // 直接塞一筆毀損記錄（segment.volume 非法），繞過 save()
+    const db = await getDB();
+    await db.put('customStories', {
+      id: 'corrupt',
+      nameKey: 'Bad',
+      description: '',
+      builtin: false,
+      segments: [{ soundId: 'rain', durationSec: 60, crossfadeSec: 5, volume: 99 }],
+      totalDurationSec: 60,
+      createdAt: 1,
+      updatedAt: 1
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const all = await repo.listAll();
+    expect(all.map((s) => s.id)).toEqual([good.id]);
+    expect(await repo.getById('corrupt')).toBeUndefined();
+    warn.mockRestore();
   });
 });
