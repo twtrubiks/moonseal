@@ -19,6 +19,12 @@ export class AudioEngine {
   /** 所有音軌都接到這個 master gain 再到喇叭，調它就等於套用 master volume 到全部播放 */
   private master: Tone.Gain | null = null;
   private masterLinear = 1;
+  /**
+   * 計時器專用的淡出 gain，串在 master 之後（track → master → timerFade → 喇叭）。
+   * 與 master volume 解耦：計時結束的淡出→靜音整段預排在「音訊時鐘」上，背景分頁
+   * 的 setTimeout 被節流也不影響，音訊仍會準時靜音。
+   */
+  private timerFade: Tone.Gain | null = null;
   private readonly tracks = new Map<string, ActiveTrack>();
   /** crossfade 淡出後延遲殺軌的計時器，key 為 soundId；軌復活或提前停掉時必須取消 */
   private readonly pendingKills = new Map<string, ReturnType<typeof setTimeout>>();
@@ -35,7 +41,10 @@ export class AudioEngine {
   async initialize(): Promise<void> {
     if (this.initialized) return;
     await Tone.start();
-    this.master = new Tone.Gain(this.masterLinear).toDestination();
+    // track → master(音量) → timerFade(計時淡出) → 喇叭
+    this.master = new Tone.Gain(this.masterLinear);
+    this.timerFade = new Tone.Gain(1).toDestination();
+    this.master.connect(this.timerFade);
     this.initialized = true;
   }
 
@@ -43,6 +52,29 @@ export class AudioEngine {
   setMasterVolume(linear: number, rampSec = 0.05): void {
     this.masterLinear = Math.max(0, Math.min(1, linear));
     this.master?.gain.rampTo(this.masterLinear, rampSec);
+  }
+
+  /**
+   * 把「保持音量 → 最後 fadeOutSec 秒淡出至靜音」整段排在音訊時鐘上：
+   * totalSec 秒後抵達靜音。排程一次即可，背景分頁被節流也會準時執行（音訊時鐘
+   * 不像 setTimeout 那樣被節流），不需回前景補觸發。
+   */
+  scheduleTimerFade(totalSec: number, fadeOutSec: number): void {
+    const g = this.timerFade?.gain;
+    if (!g) return;
+    const now = Tone.now();
+    const stopAt = now + totalSec;
+    const fadeStart = Math.max(now, stopAt - fadeOutSec);
+    g.cancelScheduledValues(now);
+    g.setValueAtTime(1, now);
+    g.setValueAtTime(1, fadeStart); // 保持全音量到淡出起點
+    g.linearRampToValueAtTime(0, stopAt); // 再線性降到 0，剛好在 stopAt 靜音
+  }
+
+  /** 取消已排定的計時淡出，把音量平順還原至全開（計時取消、或停止清理後重置） */
+  cancelTimerFade(): void {
+    // rampTo 內部會 cancelAndHold 當前值再線性 ramp，安全處理「淡出進行中被取消」
+    this.timerFade?.gain.rampTo(1, 0.1);
   }
 
   async playTrack(soundId: string, volume: number, fadeInSec = 1): Promise<void> {
@@ -82,6 +114,8 @@ export class AudioEngine {
   async stopAll(fadeOutSec = 0.5): Promise<void> {
     const ids = [...this.tracks.keys()];
     await Promise.all(ids.map((id) => this.stopTrack(id, fadeOutSec)));
+    // 軌已停（靜音）後才還原計時淡出 gain：清掉殘留排程，避免下次播放被它靜音
+    this.cancelTimerFade();
   }
 
   async crossfadeTo(soundId: string, volume: number, crossfadeSec: number): Promise<void> {
@@ -118,14 +152,6 @@ export class AudioEngine {
       }, crossfadeSec * 1000);
       this.pendingKills.set(id, handle);
     }
-  }
-
-  async masterFadeOut(fadeOutSec: number): Promise<void> {
-    for (const t of this.tracks.values()) {
-      rampVolume(t.source, 0, fadeOutSec);
-    }
-    await new Promise((r) => setTimeout(r, fadeOutSec * 1000));
-    await this.stopAll(0);
   }
 
   isPlaying(soundId: string): boolean {

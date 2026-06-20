@@ -7,6 +7,10 @@ const mocks = vi.hoisted(() => {
 
   class FakeParam {
     rampTo = vi.fn();
+    cancelScheduledValues = vi.fn();
+    setValueAtTime = vi.fn();
+    linearRampToValueAtTime = vi.fn();
+    cancelAndHoldAtTime = vi.fn();
     value = 0;
   }
   const gainInstances: FakeGain[] = [];
@@ -53,7 +57,9 @@ const mocks = vi.hoisted(() => {
     }
   }
 
-  return { startMock, loadedMock, gainToDb, FakeGain, FakePlayer, FakeNoise, playerInstances, noiseInstances, gainInstances };
+  const nowMock = vi.fn(() => 0);
+
+  return { startMock, loadedMock, gainToDb, nowMock, FakeGain, FakePlayer, FakeNoise, playerInstances, noiseInstances, gainInstances };
 });
 
 vi.mock('tone', () => ({
@@ -63,12 +69,13 @@ vi.mock('tone', () => ({
   start: mocks.startMock,
   loaded: mocks.loadedMock,
   gainToDb: mocks.gainToDb,
+  now: mocks.nowMock,
   getDestination: () => new mocks.FakeGain()
 }));
 
 import { AudioEngine } from '../../src/lib/audio/AudioEngine';
 
-const { playerInstances, noiseInstances, gainInstances, startMock, loadedMock, gainToDb } = mocks;
+const { playerInstances, noiseInstances, gainInstances, startMock, loadedMock, gainToDb, nowMock } = mocks;
 const MIN_DB = -100;
 const dbOf = (linear: number) => (linear <= 0 ? MIN_DB : gainToDb(linear));
 
@@ -81,6 +88,7 @@ describe('AudioEngine', () => {
     gainInstances.length = 0;
     startMock.mockClear();
     loadedMock.mockClear();
+    nowMock.mockReturnValue(0);
     engine = new AudioEngine();
   });
 
@@ -92,8 +100,10 @@ describe('AudioEngine', () => {
   it('initialize() 建立 master gain 並套用待生效的 masterLinear', async () => {
     engine.setMasterVolume(0.3); // 尚未 initialize，先記下
     await engine.initialize();
-    expect(gainInstances).toHaveLength(1);
-    expect(gainInstances[0]?.gain.value).toBe(0.3);
+    // 兩個 gain：master（音量）先建、timerFade（計時淡出）後建
+    expect(gainInstances).toHaveLength(2);
+    expect(gainInstances[0]?.gain.value).toBe(0.3); // master 套用待生效值
+    expect(gainInstances[1]?.gain.value).toBe(1);   // timerFade 預設全開
   });
 
   it('setMasterVolume 以線性增益 ramp master gain', async () => {
@@ -108,6 +118,43 @@ describe('AudioEngine', () => {
     expect(gainInstances[0]?.gain.rampTo).toHaveBeenLastCalledWith(1, 0.1);
     engine.setMasterVolume(-0.5, 0.1);
     expect(gainInstances[0]?.gain.rampTo).toHaveBeenLastCalledWith(0, 0.1);
+  });
+
+  it('scheduleTimerFade 把保持音量→淡出至 0 排在音訊時鐘上（背景不被節流）', async () => {
+    await engine.initialize();
+    nowMock.mockReturnValue(100); // 音訊時鐘現在 = 100s
+    engine.scheduleTimerFade(60, 10); // 60s 後靜音，最後 10s 淡出
+    const timerFade = gainInstances[1]!; // master 之後建立的 timerFade
+    expect(timerFade.gain.cancelScheduledValues).toHaveBeenCalledWith(100);
+    expect(timerFade.gain.setValueAtTime).toHaveBeenCalledWith(1, 100); // 現值錨定
+    expect(timerFade.gain.setValueAtTime).toHaveBeenCalledWith(1, 150); // 保持到淡出起點
+    expect(timerFade.gain.linearRampToValueAtTime).toHaveBeenCalledWith(0, 160); // 於 stopAt 靜音
+  });
+
+  it('scheduleTimerFade 在 fadeOut >= total 時整段淡出（fadeStart 夾到 now）', async () => {
+    await engine.initialize();
+    nowMock.mockReturnValue(0);
+    engine.scheduleTimerFade(10, 30); // 淡出比總時長還長
+    const timerFade = gainInstances[1]!;
+    expect(timerFade.gain.setValueAtTime).toHaveBeenCalledWith(1, 0); // 立即開始淡出
+    expect(timerFade.gain.linearRampToValueAtTime).toHaveBeenCalledWith(0, 10);
+  });
+
+  it('cancelTimerFade 把計時淡出 gain 平順還原至全開', async () => {
+    await engine.initialize();
+    engine.scheduleTimerFade(60, 10);
+    engine.cancelTimerFade();
+    const timerFade = gainInstances[1]!;
+    expect(timerFade.gain.rampTo).toHaveBeenLastCalledWith(1, 0.1);
+  });
+
+  it('stopAll 清理後會還原計時淡出 gain（避免下次播放被殘留排程靜音）', async () => {
+    await engine.initialize();
+    await engine.playTrack('ocean', 0.5);
+    engine.scheduleTimerFade(60, 10);
+    await engine.stopAll(0);
+    const timerFade = gainInstances[1]!;
+    expect(timerFade.gain.rampTo).toHaveBeenLastCalledWith(1, 0.1);
   });
 
   it('音軌接到 master gain 而非直接 toDestination', async () => {

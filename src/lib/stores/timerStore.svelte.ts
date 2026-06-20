@@ -16,12 +16,34 @@ class TimerStore {
 
   constructor() {
     this.timer = new SleepTimer({
-      fadeOut: (sec) => audioEngine.masterFadeOut(sec),
+      scheduleFade: (totalSec, fadeOutSec) => audioEngine.scheduleTimerFade(totalSec, fadeOutSec),
+      cancelFade: () => audioEngine.cancelTimerFade(),
       stopAll: () => {
         void audioStore.stopAll(0);
       }
     });
     void this.loadSettings();
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') this.resync();
+      });
+    }
+  }
+
+  /**
+   * 回到前景時對時。音訊淡出已排在音訊時鐘上、背景也會準時靜音；這裡用 wall-clock
+   * 校正顯示秒數，並在 setTimeout 被節流而已過 endAt 時補做 JS 端的停止清理。
+   */
+  private resync() {
+    if (!this.running) return;
+    this.timer.sync();
+    this.remainingSec = this.timer.remaining();
+    if (this.remainingSec === 0) {
+      this.running = false;
+      this.stopTick();
+    } else {
+      this.startTick();
+    }
   }
 
   private async loadSettings() {
