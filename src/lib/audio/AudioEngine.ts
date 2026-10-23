@@ -30,6 +30,8 @@ export class AudioEngine {
   private readonly pendingKills = new Map<string, ReturnType<typeof setTimeout>>();
   private previewTrack: ActiveTrack | null = null;
   private previewStopTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 每次 previewOnce 遞增；載入完成時若已不是最新的一次，代表被後來的試聽取代 */
+  private previewSeq = 0;
 
   private cancelPendingKill(soundId: string): void {
     const handle = this.pendingKills.get(soundId);
@@ -136,7 +138,8 @@ export class AudioEngine {
     }
 
     for (const id of previousIds) {
-      const prev = this.tracks.get(id)!;
+      const prev = this.tracks.get(id);
+      if (!prev) continue; // 等新軌載入期間已被 stopTrack 收掉
       rampVolume(prev.source, 0, crossfadeSec);
       this.cancelPendingKill(id);
       const handle = setTimeout(() => {
@@ -163,10 +166,17 @@ export class AudioEngine {
   }
 
   async previewOnce(soundId: string, durationSec: number, volume: number): Promise<void> {
+    const seq = ++this.previewSeq;
     await this.stopPreview(0.1);
     const def = getSoundById(soundId);
     if (!def) throw new Error(`unknown sound: ${soundId}`);
     const track = await this.createTrack(def);
+    // 載入期間又點了新的試聽：這次已被取代，直接丟掉。否則會覆蓋 previewTrack，
+    // 先建的那條（loop 播放）就沒人能停，變成孤兒一直播
+    if (seq !== this.previewSeq) {
+      track.source.dispose();
+      return;
+    }
     this.previewTrack = track;
     track.source.volume.value = MIN_DB;
     track.source.start();

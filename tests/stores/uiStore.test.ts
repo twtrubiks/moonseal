@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { uiStore } from '../../src/lib/stores/uiStore.svelte';
 import type { StoryDef } from '../../src/lib/story/types';
+import type { CustomStoryRecord } from '../../src/lib/storage/StoryRepo';
 
 const story: StoryDef = {
   id: 'test-story',
@@ -46,6 +47,26 @@ describe('uiStore — hash 路由', () => {
     window.dispatchEvent(new PopStateEvent('popstate'));
     expect(uiStore.route).toBe('mine');
   });
+
+  it('popstate 回到 #/home 也會切回首頁', () => {
+    uiStore.setRoute('mine');
+    window.location.hash = '#/home';
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    expect(uiStore.route).toBe('home');
+  });
+
+  it('hash 省略斜線（#story）也能解析', () => {
+    window.location.hash = '#story';
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    expect(uiStore.route).toBe('story');
+  });
+
+  it.each(['#/unknown', '#/', '', '#/mix/extra', '#//mix'])('未知或格式不符的 hash %j 不改變分頁', (hash) => {
+    uiStore.setRoute('mine');
+    window.location.hash = hash;
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    expect(uiStore.route).toBe('mine');
+  });
 });
 
 describe('uiStore — 返回鍵關閉 overlay', () => {
@@ -82,7 +103,10 @@ describe('uiStore — 返回鍵關閉 overlay', () => {
 
   it('UI 主動關閉會收掉 entry：closeStory 後返回鍵不會再多關一層', async () => {
     uiStore.openStory(story);
+    const back = vi.spyOn(history, 'back');
     uiStore.closeStory();
+    expect(back).toHaveBeenCalledOnce();
+    back.mockRestore();
     await flushHistory();
     expect(uiStore.currentStory).toBeNull();
 
@@ -101,6 +125,191 @@ describe('uiStore — 返回鍵關閉 overlay', () => {
 
     await flushHistory();
     expect(routeHash()).toBe('#/mine');
+  });
+});
+
+const draft: CustomStoryRecord = {
+  id: 'draft-1',
+  nameKey: '草稿',
+  description: '',
+  builtin: false,
+  segments: [],
+  totalDurationSec: 0,
+  createdAt: 1,
+  updatedAt: 1
+};
+
+describe('uiStore — editor overlay', () => {
+  it('openEditor 推入 entry，返回鍵關閉 editor 並清掉 initial', async () => {
+    const push = vi.spyOn(history, 'pushState');
+    uiStore.openEditor(draft);
+    expect(uiStore.editor).toEqual({ open: true, initial: draft });
+    expect(push).toHaveBeenCalledOnce();
+    push.mockRestore();
+
+    history.back();
+    await flushHistory();
+    expect(uiStore.editor).toEqual({ open: false, initial: null });
+  });
+
+  it('openEditor 不帶參數時 initial 為 null（新建）', () => {
+    uiStore.openEditor();
+    expect(uiStore.editor).toEqual({ open: true, initial: null });
+  });
+
+  it('editor 已開時再 openEditor 只換內容、不再推 entry', () => {
+    uiStore.openEditor(null);
+    const push = vi.spyOn(history, 'pushState');
+    uiStore.openEditor(draft);
+    expect(uiStore.editor).toEqual({ open: true, initial: draft });
+    expect(push).not.toHaveBeenCalled();
+    push.mockRestore();
+  });
+
+  it('closeEditor 收掉 entry；之後的返回鍵關的是下一層 overlay', async () => {
+    uiStore.openStory(story);
+    uiStore.openEditor(draft);
+    const back = vi.spyOn(history, 'back');
+    uiStore.closeEditor();
+    expect(back).toHaveBeenCalledOnce();
+    back.mockRestore();
+    await flushHistory();
+    expect(uiStore.editor.open).toBe(false);
+    expect(uiStore.currentStory).not.toBeNull();
+
+    history.back();
+    await flushHistory();
+    expect(uiStore.currentStory).toBeNull();
+  });
+
+  it('closeTimer 收掉 entry；之後的返回鍵關的是下一層 overlay', async () => {
+    uiStore.openStory(story);
+    uiStore.openTimer();
+    const back = vi.spyOn(history, 'back');
+    uiStore.closeTimer();
+    expect(back).toHaveBeenCalledOnce();
+    back.mockRestore();
+    expect(uiStore.timerSheetOpen).toBe(false);
+    await flushHistory();
+    expect(uiStore.currentStory).not.toBeNull();
+
+    history.back();
+    await flushHistory();
+    expect(uiStore.currentStory).toBeNull();
+  });
+
+  it('關一個沒開的 overlay 時，不能收掉其他 overlay 的 entry', async () => {
+    uiStore.openStory(story);
+    const back = vi.spyOn(history, 'back');
+    uiStore.closeTimer();
+    uiStore.closeEditor();
+    expect(back).not.toHaveBeenCalled();
+    back.mockRestore();
+
+    uiStore.closeStory();
+    await flushHistory();
+    uiStore.openTimer();
+    const back2 = vi.spyOn(history, 'back');
+    uiStore.closeStory();
+    expect(back2).not.toHaveBeenCalled();
+    back2.mockRestore();
+    expect(uiStore.timerSheetOpen).toBe(true);
+  });
+
+  it('close* 在對應 overlay 沒開時是 no-op，不會呼叫 history.back()', () => {
+    const back = vi.spyOn(history, 'back');
+    uiStore.closeEditor();
+    uiStore.closeTimer();
+    uiStore.closeStory();
+    expect(back).not.toHaveBeenCalled();
+    back.mockRestore();
+  });
+
+  it('openTimer / openStory 重複呼叫不重複推 entry', () => {
+    const push = vi.spyOn(history, 'pushState');
+    uiStore.openTimer();
+    uiStore.openTimer();
+    expect(push).toHaveBeenCalledTimes(1);
+    const other: StoryDef = { ...story, id: 'other' };
+    uiStore.openStory(story);
+    uiStore.openStory(other);
+    expect(push).toHaveBeenCalledTimes(2);
+    expect(uiStore.currentStory?.id).toBe('other');
+    // 每個 entry 帶上自己的疊層深度
+    expect(push.mock.calls.map((c) => c[0])).toEqual([{ overlay: 1 }, { overlay: 2 }]);
+    push.mockRestore();
+  });
+
+  it('疊三層時返回鍵依序關 timer → editor → story', async () => {
+    uiStore.openStory(story);
+    uiStore.openEditor(draft);
+    uiStore.openTimer();
+
+    history.back();
+    await flushHistory();
+    expect(uiStore.timerSheetOpen).toBe(false);
+    expect(uiStore.editor.open).toBe(true);
+
+    history.back();
+    await flushHistory();
+    expect(uiStore.editor.open).toBe(false);
+    expect(uiStore.currentStory).not.toBeNull();
+
+    history.back();
+    await flushHistory();
+    expect(uiStore.currentStory).toBeNull();
+  });
+
+  it('setRoute 一次收掉所有 overlay entries：history.go(-層數)', () => {
+    const go = vi.spyOn(history, 'go');
+    uiStore.openStory(story);
+    uiStore.openEditor(draft);
+    uiStore.openTimer();
+    uiStore.setRoute('mix');
+    expect(go).toHaveBeenCalledWith(-3);
+    expect(uiStore.timerSheetOpen).toBe(false);
+    expect(uiStore.editor).toEqual({ open: false, initial: null });
+    expect(uiStore.currentStory).toBeNull();
+    go.mockRestore();
+  });
+
+  it('沒有 overlay 時 setRoute 不動 history.go', () => {
+    const go = vi.spyOn(history, 'go');
+    uiStore.setRoute('mix');
+    expect(go).not.toHaveBeenCalled();
+    go.mockRestore();
+  });
+
+  it('setRoute 收 entry 引發的 popstate 被略過，不會誤關之後新開的 overlay', async () => {
+    uiStore.openTimer();
+    uiStore.setRoute('story');
+    uiStore.openStory(story); // 在 go(-1) 的 popstate 抵達前就開新 overlay
+    await flushHistory();
+    expect(uiStore.currentStory).not.toBeNull();
+    expect(uiStore.route).toBe('story');
+    expect(routeHash()).toBe('#/story');
+  });
+});
+
+describe('uiStore — breakpoint', () => {
+  it('依 (min-width: 880px) 判斷 mobile，並跟著 change 事件更新', () => {
+    let listener: ((e: { matches: boolean }) => void) | null = null;
+    const mql = {
+      matches: false,
+      addEventListener: (type: string, l: (e: { matches: boolean }) => void) => {
+        if (type === 'change') listener = l;
+      }
+    };
+    const matchMedia = vi.fn(() => mql);
+    vi.stubGlobal('matchMedia', matchMedia);
+    uiStore.initBreakpoint();
+    expect(matchMedia).toHaveBeenCalledWith('(min-width: 880px)');
+    expect(uiStore.mobile).toBe(true);
+    listener!({ matches: true });
+    expect(uiStore.mobile).toBe(false);
+    listener!({ matches: false });
+    expect(uiStore.mobile).toBe(true);
+    vi.unstubAllGlobals();
   });
 });
 

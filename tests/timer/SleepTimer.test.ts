@@ -45,6 +45,7 @@ describe('SleepTimer', () => {
     const timer = new SleepTimer(cb);
 
     timer.start({ totalSec: 60, fadeOutSec: 10 });
+    expect(cb.cancelFade).not.toHaveBeenCalled(); // 首次 start 沒有可取消的淡出
     timer.cancel();
     expect(cb.cancelFade).toHaveBeenCalledOnce();
 
@@ -110,4 +111,79 @@ describe('SleepTimer', () => {
       expect(cb.stopAll).not.toHaveBeenCalled();
     });
   });
+
+  it('沒在計時時 cancel 不會呼叫 cancelFade', () => {
+    const cb = makeCb();
+    new SleepTimer(cb).cancel();
+    expect(cb.cancelFade).not.toHaveBeenCalled();
+  });
+
+  it('remaining() 無條件進位到整秒，結束後為 0', async () => {
+    const timer = new SleepTimer(makeCb());
+    expect(timer.remaining()).toBe(0);
+    timer.start({ totalSec: 30, fadeOutSec: 5 });
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.001Z'));
+    expect(timer.remaining()).toBe(30);
+    vi.setSystemTime(new Date('2026-01-01T00:00:29.999Z'));
+    expect(timer.remaining()).toBe(1);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(timer.remaining()).toBe(0);
+    expect(timer.isRunning()).toBe(false);
+  });
+
+  it('計時中重新 start：以新的時長為準，舊的結束點不會觸發', async () => {
+    const cb = makeCb();
+    const timer = new SleepTimer(cb);
+    timer.start({ totalSec: 60, fadeOutSec: 10 });
+    await vi.advanceTimersByTimeAsync(30_000);
+    timer.start({ totalSec: 60, fadeOutSec: 5 });
+    expect(cb.scheduleFade).toHaveBeenLastCalledWith(60, 5);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(cb.stopAll).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(cb.stopAll).toHaveBeenCalledOnce();
+  });
+
+  it('結束後不會留下任何計時器', async () => {
+    const timer = new SleepTimer(makeCb());
+    timer.start({ totalSec: 1, fadeOutSec: 0 });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  describe('sync() 邊界', () => {
+    it('多次 sync 不會疊出多個結束計時器（只 stopAll 一次）', async () => {
+      const cb = makeCb();
+      const timer = new SleepTimer(cb);
+      timer.start({ totalSec: 60, fadeOutSec: 10 });
+      vi.setSystemTime(new Date('2026-01-01T00:00:20Z'));
+      timer.sync();
+      vi.setSystemTime(new Date('2026-01-01T00:00:40Z'));
+      timer.sync();
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(cb.stopAll).toHaveBeenCalledOnce();
+    });
+
+    it('剛好在 endAt 對時：當下就停止，不再多等一個 tick', () => {
+      const cb = makeCb();
+      const timer = new SleepTimer(cb);
+      timer.start({ totalSec: 60, fadeOutSec: 10 });
+      vi.setSystemTime(new Date('2026-01-01T00:01:00Z'));
+      timer.sync();
+      expect(cb.stopAll).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('結束後再 sync 是 no-op', async () => {
+      const cb = makeCb();
+      const timer = new SleepTimer(cb);
+      timer.start({ totalSec: 1, fadeOutSec: 0 });
+      await vi.advanceTimersByTimeAsync(1000);
+      vi.setSystemTime(new Date('2026-01-01T00:10:00Z'));
+      timer.sync();
+      expect(cb.stopAll).toHaveBeenCalledOnce();
+    });
+  });
 });
+

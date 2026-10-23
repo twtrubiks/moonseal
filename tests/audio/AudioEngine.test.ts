@@ -20,8 +20,8 @@ const mocks = vi.hoisted(() => {
       this.gain.value = initial;
       gainInstances.push(this);
     }
-    connect(_: unknown) { return this; }
-    toDestination() { return this; }
+    connect = vi.fn((_: unknown) => this);
+    toDestination = vi.fn(() => this);
     dispose = vi.fn();
   }
   const playerInstances: FakePlayer[] = [];
@@ -318,6 +318,69 @@ describe('AudioEngine', () => {
     });
   });
 
+  describe('preview 載入中被取代', () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('連點兩次試聽（第一個還在載入）：先建的那條被丟棄，不會變成停不掉的孤兒', async () => {
+      await engine.initialize();
+      let releaseFirst!: () => void;
+      let releaseSecond!: () => void;
+      loadedMock
+        .mockImplementationOnce(() => new Promise<void>((r) => { releaseFirst = r; }))
+        .mockImplementationOnce(() => new Promise<void>((r) => { releaseSecond = r; }));
+
+      const p1 = engine.previewOnce('ocean', 5, 0.7);
+      await vi.advanceTimersByTimeAsync(0);
+      const p2 = engine.previewOnce('rain', 5, 0.7);
+      await vi.advanceTimersByTimeAsync(0);
+      releaseFirst();
+      releaseSecond();
+      await Promise.all([p1, p2]);
+
+      const [ocean, rain] = playerInstances;
+      expect(ocean?.start).not.toHaveBeenCalled();
+      expect(ocean?.dispose).toHaveBeenCalledOnce();
+      expect(rain?.start).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(rain?.stop).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('後點的先載完、先點的後載完：仍只播後點的那個', async () => {
+      await engine.initialize();
+      let releaseFirst!: () => void;
+      loadedMock
+        .mockImplementationOnce(() => new Promise<void>((r) => { releaseFirst = r; }))
+        .mockImplementationOnce(async () => {});
+
+      const p1 = engine.previewOnce('ocean', 5, 0.7);
+      await vi.advanceTimersByTimeAsync(0);
+      await engine.previewOnce('rain', 5, 0.7);
+      releaseFirst();
+      await p1;
+
+      expect(playerInstances[0]?.start).not.toHaveBeenCalled();
+      expect(playerInstances[0]?.dispose).toHaveBeenCalledOnce();
+      expect(playerInstances[1]?.start).toHaveBeenCalledOnce();
+      expect(playerInstances[1]?.stop).not.toHaveBeenCalled();
+    });
+  });
+
+  it('crossfadeTo 等新軌載入期間舊軌被 stopTrack 收掉：照常完成，不丟 TypeError', async () => {
+    await engine.initialize();
+    await engine.playTrack('ocean', 0.7);
+    let release!: () => void;
+    loadedMock.mockImplementationOnce(() => new Promise<void>((r) => { release = r; }));
+    const p = engine.crossfadeTo('rain', 0.6, 1);
+    await Promise.resolve();
+    await engine.stopTrack('ocean', 0);
+    release();
+    await expect(p).resolves.toBeUndefined();
+    expect(engine.activeTrackIds()).toEqual(['rain']);
+  });
+
   describe('crossfade 殺軌計時器 race', () => {
     beforeEach(() => { vi.useFakeTimers(); });
     afterEach(() => { vi.useRealTimers(); });
@@ -347,6 +410,213 @@ describe('AudioEngine', () => {
       expect(engine.isPlaying('ocean')).toBe(true);
       const newOcean = playerInstances[2];
       expect(newOcean?.stop).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('初始化與未初始化時的防護', () => {
+    it('initialize() 重複呼叫只做一次（不重建 gain、不重複 Tone.start）', async () => {
+      await engine.initialize();
+      await engine.initialize();
+      expect(startMock).toHaveBeenCalledOnce();
+      expect(gainInstances).toHaveLength(2);
+    });
+
+    it('串接順序：master → timerFade → 喇叭', async () => {
+      await engine.initialize();
+      const [master, timerFade] = gainInstances;
+      expect(master!.connect).toHaveBeenCalledWith(timerFade);
+      expect(timerFade!.toDestination).toHaveBeenCalledOnce();
+      expect(master!.toDestination).not.toHaveBeenCalled();
+    });
+
+    it('未初始化時 scheduleTimerFade / cancelTimerFade 為 no-op，不丟例外', () => {
+      expect(() => engine.scheduleTimerFade(60, 10)).not.toThrow();
+      expect(() => engine.cancelTimerFade()).not.toThrow();
+    });
+
+    it('未初始化就建軌時直接接到 Tone destination（不靠 master）', async () => {
+      await engine.playTrack('ocean', 0.5);
+      expect(playerInstances[0]?.connect).toHaveBeenCalledOnce();
+      expect(engine.isPlaying('ocean')).toBe(true);
+    });
+  });
+
+  describe('對不存在的軌操作', () => {
+    it('setVolume / stopTrack 對沒在播的 id 是 no-op', async () => {
+      await engine.initialize();
+      expect(() => engine.setVolume('ocean', 0.5)).not.toThrow();
+      await expect(engine.stopTrack('ocean')).resolves.toBeUndefined();
+    });
+
+    it('crossfadeTo / previewOnce 對未知 id 丟錯且不建立任何節點', async () => {
+      await engine.initialize();
+      await expect(engine.crossfadeTo('nope', 0.5, 1)).rejects.toThrow('unknown sound: nope');
+      await expect(engine.previewOnce('nope', 5, 0.5)).rejects.toThrow('unknown sound: nope');
+      expect(playerInstances).toHaveLength(0);
+      expect(noiseInstances).toHaveLength(0);
+    });
+  });
+
+  it('playTrack 對已在播的 id 以 fadeInSec 調整到新音量', async () => {
+    await engine.initialize();
+    await engine.playTrack('ocean', 0.5);
+    await engine.playTrack('ocean', 0.8, 3);
+    expect(playerInstances[0]?.volume.rampTo).toHaveBeenLastCalledWith(dbOf(0.8), 3);
+  });
+
+  it('音量 0 對應到 MIN_DB（不是 -Infinity）', async () => {
+    await engine.initialize();
+    await engine.playTrack('ocean', 0.5);
+    engine.setVolume('ocean', 0, 1);
+    expect(playerInstances[0]?.volume.rampTo).toHaveBeenLastCalledWith(MIN_DB, 1);
+  });
+
+  it('activeTrackIds 依加入順序列出主軌', async () => {
+    await engine.initialize();
+    await engine.playTrack('rain', 0.5);
+    await engine.playTrack('ocean', 0.5);
+    expect(engine.activeTrackIds()).toEqual(['rain', 'ocean']);
+  });
+
+  describe('淡出時序（fake timers）', () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('stopTrack 先淡到 MIN_DB，等 fadeOutSec 後才 stop/dispose 並移出追蹤', async () => {
+      await engine.initialize();
+      await engine.playTrack('ocean', 0.5);
+      const p = engine.stopTrack('ocean', 0.5);
+      expect(playerInstances[0]?.volume.rampTo).toHaveBeenLastCalledWith(MIN_DB, 0.5);
+      await vi.advanceTimersByTimeAsync(499);
+      expect(playerInstances[0]?.stop).not.toHaveBeenCalled();
+      expect(engine.isPlaying('ocean')).toBe(true);
+      await vi.advanceTimersByTimeAsync(1);
+      await p;
+      expect(playerInstances[0]?.stop).toHaveBeenCalledOnce();
+      expect(playerInstances[0]?.dispose).toHaveBeenCalledOnce();
+      expect(engine.isPlaying('ocean')).toBe(false);
+    });
+
+    it('stopTrack(0) 立即停止，不排 ramp', async () => {
+      await engine.initialize();
+      await engine.playTrack('ocean', 0.5);
+      const before = playerInstances[0]!.volume.rampTo.mock.calls.length;
+      await engine.stopTrack('ocean', 0);
+      expect(playerInstances[0]!.volume.rampTo.mock.calls.length).toBe(before);
+      expect(playerInstances[0]?.stop).toHaveBeenCalledOnce();
+    });
+
+    it('stopPreview 先淡到 MIN_DB，等 fadeOutSec 後才 stop/dispose', async () => {
+      await engine.initialize();
+      await engine.previewOnce('ocean', 5, 0.7);
+      const p = engine.stopPreview(0.3);
+      expect(playerInstances[0]?.volume.rampTo).toHaveBeenLastCalledWith(MIN_DB, 0.3);
+      await vi.advanceTimersByTimeAsync(299);
+      expect(playerInstances[0]?.stop).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await p;
+      expect(playerInstances[0]?.stop).toHaveBeenCalledOnce();
+      expect(playerInstances[0]?.dispose).toHaveBeenCalledOnce();
+    });
+
+    it('stopPreview(0) 立即停止，不排 ramp', async () => {
+      await engine.initialize();
+      await engine.previewOnce('ocean', 5, 0.7);
+      const before = playerInstances[0]!.volume.rampTo.mock.calls.length;
+      await engine.stopPreview(0);
+      expect(playerInstances[0]!.volume.rampTo.mock.calls.length).toBe(before);
+      expect(playerInstances[0]?.stop).toHaveBeenCalledOnce();
+    });
+
+    it('previewOnce 從 MIN_DB 以 0.3s 淡入，durationSec 到期後以 1s 淡出停止', async () => {
+      await engine.initialize();
+      await engine.previewOnce('ocean', 5, 0.6);
+      const preview = playerInstances[0]!;
+      expect(preview.volume.value).toBe(MIN_DB);
+      expect(preview.start).toHaveBeenCalledOnce();
+      expect(preview.volume.rampTo).toHaveBeenLastCalledWith(dbOf(0.6), 0.3);
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(preview.volume.rampTo).toHaveBeenLastCalledWith(MIN_DB, 1);
+      expect(preview.stop).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(preview.stop).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('crossfade 完成後舊軌被 stop/dispose 並移出追蹤，新軌照常播放', async () => {
+      await engine.initialize();
+      await engine.playTrack('ocean', 0.7);
+      await engine.crossfadeTo('rain', 0.6, 4);
+      const [ocean, rain] = playerInstances;
+      expect(rain?.start).toHaveBeenCalledOnce();
+      expect(rain?.volume.value).toBe(MIN_DB);
+      expect(engine.activeTrackIds()).toEqual(['ocean', 'rain']);
+
+      await vi.advanceTimersByTimeAsync(3999);
+      expect(ocean?.stop).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(ocean?.stop).toHaveBeenCalledOnce();
+      expect(ocean?.dispose).toHaveBeenCalledOnce();
+      expect(engine.activeTrackIds()).toEqual(['rain']);
+      expect(rain?.stop).not.toHaveBeenCalled();
+    });
+
+    it('crossfade 會把所有其他主軌都淡出並收掉', async () => {
+      await engine.initialize();
+      await engine.playTrack('ocean', 0.7);
+      await engine.playTrack('wind', 0.7);
+      await engine.crossfadeTo('rain', 0.6, 2);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(engine.activeTrackIds()).toEqual(['rain']);
+      expect(playerInstances[0]?.stop).toHaveBeenCalledOnce();
+      expect(playerInstances[1]?.stop).toHaveBeenCalledOnce();
+    });
+
+    it('連續 crossfade：舊軌的殺軌計時器被新排程取代，只會 stop 一次', async () => {
+      await engine.initialize();
+      await engine.playTrack('ocean', 0.7);
+      await engine.crossfadeTo('rain', 0.6, 10);   // 排程 +10s 殺 ocean
+      await vi.advanceTimersByTimeAsync(5000);
+      await engine.crossfadeTo('birds', 0.6, 1);   // ocean 改排 +6s 殺、rain 排 +6s 殺
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(playerInstances[0]?.stop).toHaveBeenCalledOnce();
+      expect(playerInstances[0]?.dispose).toHaveBeenCalledOnce();
+      expect(engine.activeTrackIds()).toEqual(['birds']);
+    });
+
+    it('crossfade 窗口內 stopTrack 舊軌：取消殺軌計時器，不會重複 stop/dispose', async () => {
+      await engine.initialize();
+      await engine.playTrack('ocean', 0.7);
+      await engine.crossfadeTo('rain', 0.6, 10);
+      await engine.stopTrack('ocean', 0);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(playerInstances[0]?.stop).toHaveBeenCalledOnce();
+      expect(playerInstances[0]?.dispose).toHaveBeenCalledOnce();
+    });
+
+    it('crossfade 窗口內以 playTrack 叫回舊軌：取消殺軌並回到指定音量', async () => {
+      await engine.initialize();
+      await engine.playTrack('ocean', 0.7);
+      await engine.crossfadeTo('rain', 0.6, 10);
+      await engine.playTrack('ocean', 0.5, 2);
+      expect(playerInstances[0]?.volume.rampTo).toHaveBeenLastCalledWith(dbOf(0.5), 2);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(engine.isPlaying('ocean')).toBe(true);
+      expect(playerInstances[0]?.stop).not.toHaveBeenCalled();
+    });
+
+    it('stopAll 等所有軌淡出後才還原計時淡出 gain', async () => {
+      await engine.initialize();
+      await engine.playTrack('ocean', 0.5);
+      const timerFade = gainInstances[1]!;
+      const p = engine.stopAll(0.5);
+      await vi.advanceTimersByTimeAsync(499);
+      expect(timerFade.gain.rampTo).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await p;
+      expect(timerFade.gain.rampTo).toHaveBeenCalledWith(1, 0.1);
+      expect(engine.activeTrackIds()).toEqual([]);
     });
   });
 });

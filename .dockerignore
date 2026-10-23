@@ -16,3 +16,6 @@ coverage
 .claude
 .nvmrc
 README.md
+reports
+.stryker-tmp
+stryker.config.mjs

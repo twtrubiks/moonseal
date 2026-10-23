@@ -51,6 +51,7 @@ pnpm install
 pnpm dev          # http://localhost:5173
 pnpm test         # vitest watch 模式
 pnpm test:run     # vitest 單次執行
+pnpm test:mutation # StrykerJS 變異測試，報告輸出到 reports/mutation/
 pnpm check        # svelte-check + tsc
 pnpm build        # 打包到 dist/
 pnpm preview      # 在 :4173 預覽 production build

@@ -28,8 +28,10 @@ describe('FavoritesRepo', () => {
   it('isFavorite() returns true for stored ref', async () => {
     const repo = new FavoritesRepo();
     await repo.add({ type: 'sound', refId: 'rain' });
+    await repo.add({ type: 'sound', refId: 'wind' });
+    await repo.add({ type: 'story', refId: 'ocean' });
     expect(await repo.isFavorite('sound', 'rain')).toBe(true);
-    expect(await repo.isFavorite('sound', 'ocean')).toBe(false);
+    expect(await repo.isFavorite('sound', 'ocean')).toBe(false); // 同 refId 不同 type 不算
   });
 
   it('listByType filters', async () => {
@@ -39,6 +41,14 @@ describe('FavoritesRepo', () => {
     const sounds = await repo.listByType('sound');
     expect(sounds).toHaveLength(1);
     expect(sounds[0]?.refId).toBe('ocean');
+  });
+
+  it('listAll 依 addedAt 新到舊排序（與 key 順序無關）', async () => {
+    const db = await getDB();
+    await db.put('favorites', { id: 'a', type: 'sound', refId: 'x', addedAt: 1 });
+    await db.put('favorites', { id: 'b', type: 'sound', refId: 'y', addedAt: 3 });
+    await db.put('favorites', { id: 'c', type: 'sound', refId: 'z', addedAt: 2 });
+    expect((await new FavoritesRepo().listAll()).map((f) => f.id)).toEqual(['b', 'c', 'a']);
   });
 
   it('listAll sorts newest first', async () => {

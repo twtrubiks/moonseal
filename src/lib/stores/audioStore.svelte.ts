@@ -118,6 +118,11 @@ class AudioStore {
               const msg = err instanceof Error ? err.message : '夜讀載入失敗';
               toastStore.show(`夜讀載入失敗：${msg}`, 'error');
               runner.cancel();
+              // runner 取消後不會再有 story-end，要自己收掉回 idle，否則會卡在 story 模式；
+              // 排進序列鎖，期間若已被 stopAll / 新夜讀取代就不動
+              void this.#serialize(async () => {
+                if (this.runner === runner) await this.#leaveStorySync(0.5);
+              }).catch(() => { /* 收尾失敗也無從補救，toast 已提示 */ });
             }
           })();
           this.pendingSegment = work;
@@ -199,6 +204,9 @@ class AudioStore {
     let resolveDone!: (v: T) => void;
     let rejectDone!: (e: unknown) => void;
     const done = new Promise<T>((res, rej) => { resolveDone = res; rejectDone = rej; });
+    // done 只給後續排隊者等待用（它們會吞掉錯誤），錯誤已由 fn 的呼叫端收到；
+    // 沒人排隊時不能讓它變成 unhandled rejection
+    done.catch(() => {});
     this.busy = done;
     if (prev) { try { await prev; } catch { /* prev 失敗不影響後續排隊任務 */ } }
     try {

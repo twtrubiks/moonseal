@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { VitePWA } from "vite-plugin-pwa";
 
@@ -70,5 +70,7 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./tests/setup.ts"],
+    // Stryker 變異測試的沙盒會複製一份 tests/，不能被一般的 vitest 執行掃到
+    exclude: [...configDefaults.exclude, ".stryker-tmp/**"],
   },
 });
